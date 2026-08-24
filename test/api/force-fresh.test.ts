@@ -7,11 +7,14 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../../src/api/cache', () => ({
+  cacheTtl: 10 * 60_000,
   loadCache: () => ({
-    'npm:cached-package': {
-      cacheTime: Date.now(),
+    get: () => ({
       data: ['1.0.0'],
-    },
+      expiresAt: Date.now() + 10 * 60_000,
+    }),
+    set: vi.fn(),
+    delete: vi.fn(),
   }),
   dumpCache: vi.fn(),
 }))

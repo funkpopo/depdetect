@@ -1,7 +1,5 @@
-import NodeCache from 'node-cache'
 import type Item from '../core/Item'
-import { ttl } from '../utils/ttl'
-import { dumpCache, loadCache } from './cache'
+import { cacheTtl, dumpCache, loadCache, type CacheEntry } from './cache'
 import { version } from './version'
 import { pypiVersions } from './pypi'
 import { goModuleVersions } from './gomod'
@@ -9,17 +7,7 @@ import { mavenVersions } from './maven'
 import { protocolDep } from './utils'
 import { normalizeVersions } from '../core/versions'
 
-const cacheInit = Object.entries(loadCache())
-const init = cacheInit.map(([key, { cacheTime, data }]) => {
-  return {
-    key,
-    val: data,
-    ttl: ttl(cacheTime),
-  }
-})
-const cache = new NodeCache({ stdTTL: 60 * 10 })
-cache.mset(init)
-// const cacheTTL = 30 * 60_000 // 30min
+const cache = loadCache()
 
 let cacheChanged = false
 const pendingVersions = new Map<string, Promise<string[] | undefined>>()
@@ -41,12 +29,11 @@ export async function getPackageData(
   const name = item.key
   const cacheKey = `${item.registry}:${name}`
 
-  const cached: string[] | undefined = cache.get(cacheKey)
+  const cached = getCacheData(cacheKey)
   const cacheData = cached ? normalizeVersions(item, cached) : undefined
   if (cacheData && !forceFresh) {
     if (cached && (cached.length !== cacheData.length || cached.some((version, index) => version !== cacheData[index]))) {
-      cache.set(cacheKey, cacheData)
-      cacheChanged = true
+      setCacheData(cacheKey, cacheData)
     }
     console.log('vscode-packages: use cache', name)
     return { version: cacheData }
@@ -78,8 +65,7 @@ async function reGetVersion(item: Item, root: string): Promise<string[] | undefi
 
       if (data) {
         const versions = normalizeVersions(item, data)
-        cache.set(`${item.registry}:${item.key}`, versions)
-        cacheChanged = true
+        setCacheData(`${item.registry}:${item.key}`, versions)
         return versions
       }
     }
@@ -98,6 +84,28 @@ async function reGetVersion(item: Item, root: string): Promise<string[] | undefi
 }
 
 export function saveCache() {
-  const cacheContent: any = cache.mget(cache.keys())
-  dumpCache(cacheContent, cacheChanged)
+  dumpCache(cache, cacheChanged)
+}
+
+function getCacheData(key: string): string[] | undefined {
+  const entry = cache.get(key)
+  if (!entry)
+    return undefined
+
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key)
+    cacheChanged = true
+    return undefined
+  }
+
+  return entry.data
+}
+
+function setCacheData(key: string, data: string[]) {
+  const entry: CacheEntry = {
+    data,
+    expiresAt: Date.now() + cacheTtl,
+  }
+  cache.set(key, entry)
+  cacheChanged = true
 }
