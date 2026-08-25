@@ -1,4 +1,4 @@
-import { ofetch } from 'ofetch'
+import { requestText } from './request'
 
 /** Escape a module path according to the Go module proxy protocol. */
 export function escapeGoModulePath(modulePath: string) {
@@ -17,9 +17,7 @@ export function escapeGoModulePath(modulePath: string) {
 export async function goModuleVersions(modulePath: string): Promise<string[] | null> {
   try {
     const escapedPath = escapeGoModulePath(modulePath)
-    const response = await ofetch(`https://proxy.golang.org/${escapedPath}/@v/list`, {
-      responseType: 'text',
-    })
+    const response = await requestText(`https://proxy.golang.org/${escapedPath}/@v/list`)
     return response.split(/\r?\n/).map(version => version.trim()).filter(Boolean)
   }
   catch {

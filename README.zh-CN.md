@@ -77,6 +77,12 @@ DepDetect 会排除预发布版本，同时排除已废弃的 npm 版本和已�
 
 添加新依赖后，或需要获取最新的 registry 数据时，请运行 **DepDetect: Retry to fetch the active dependency file**。Registry 响应会被缓存，以加快后续检查速度。
 
+## Registry 与鉴权行为
+
+PyPI、Go Module Proxy 和 Maven Central 请求使用 Node.js 运行时的原生 `fetch`，共用 10 秒超时、明确的 `User-Agent`、响应状态码检查和响应解析检查。npm 请求仍然使用 `npm-registry-fetch`，以保留现有的 npm registry、代理、证书和请求行为。
+
+对于 npm，默认 registry 通过 `npm config get registry` 读取；作用域包还会读取 `npm config get @scope:registry`。扩展目前不会将 npm auth token 或其他凭据读取并注入请求选项。公共 registry 以及不要求鉴权的私有 registry 可以正常工作；需要私有 registry 鉴权的软件包可能显示 `❗`，直到后续明确加入 npm 鉴权支持。
+
 ## 设置
 
 | 设置项 | 默认值 | 说明 |

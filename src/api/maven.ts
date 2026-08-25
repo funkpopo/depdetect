@@ -1,4 +1,4 @@
-import { ofetch } from 'ofetch'
+import { requestJson } from './request'
 
 interface MavenSearchResponse {
   response?: {
@@ -19,14 +19,14 @@ export async function mavenVersions(coordinate: string): Promise<string[] | null
   const query = `g:"${groupId}" AND a:"${artifactId}"`
 
   try {
-    const data = await ofetch<MavenSearchResponse>('https://search.maven.org/solrsearch/select', {
-      query: {
-        q: query,
-        core: 'gav',
-        rows: 200,
-        wt: 'json',
-      },
-    })
+    const url = new URL('https://search.maven.org/solrsearch/select')
+    url.search = new URLSearchParams({
+      q: query,
+      core: 'gav',
+      rows: '200',
+      wt: 'json',
+    }).toString()
+    const data = await requestJson<MavenSearchResponse>(url.toString())
     return (data.response?.docs ?? [])
       .map(document => document.v)
       .filter((version): version is string => Boolean(version))

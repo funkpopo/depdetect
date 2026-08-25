@@ -77,6 +77,12 @@ DepDetect fetches version metadata when a supported file is opened for the first
 
 Run **DepDetect: Retry to fetch the active dependency file** after adding a dependency or whenever you want fresh registry data. Registry responses are cached for faster subsequent checks.
 
+## Registry and authentication behavior
+
+PyPI, Go Module Proxy, and Maven Central requests use the Node.js runtime's native `fetch` with a shared 10-second timeout, explicit `User-Agent`, and response status and parsing checks. npm requests intentionally remain on `npm-registry-fetch` so the extension keeps its existing npm registry, proxy, certificate, and request behavior.
+
+For npm, the registry URL is read with `npm config get registry`; scoped packages also use `npm config get @scope:registry`. The extension currently does not read npm auth tokens or other credentials into the request options. Public registries and private registries that do not require authentication work normally, while packages that require private-registry authentication may show `❗` until npm authentication support is added explicitly.
+
 ## Settings
 
 | Setting | Default | Description |
