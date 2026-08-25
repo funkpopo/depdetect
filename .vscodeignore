@@ -11,4 +11,7 @@ pnpm-workspace.yaml
 tsconfig.json
 tsup.config.ts
 res/*.svg
+todo.md
+test-depfiles/**
+screenshots/**
 *.vsix

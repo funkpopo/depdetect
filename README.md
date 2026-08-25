@@ -19,7 +19,7 @@
 
 DepDetect adds version status markers directly to supported dependency files. Hover over a dependency to browse published versions, open its registry page, or replace the current version with one click.
 
-![DepDetect showing dependency versions in VS Code](./screenshots/preview.gif)
+![DepDetect showing dependency versions in VS Code](https://raw.githubusercontent.com/funkpopo/dep-packages/main/screenshots/preview.gif)
 
 ## Highlights
 

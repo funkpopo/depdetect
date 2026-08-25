@@ -19,7 +19,7 @@
 
 DepDetect 会在受支持的依赖文件中直接显示版本状态标记。将鼠标悬停在依赖项上，即可浏览已发布版本、打开对应的软件包页面，或单击版本号完成替换。
 
-![DepDetect 在 VS Code 中显示依赖版本](./screenshots/preview.gif)
+![DepDetect 在 VS Code 中显示依赖版本](https://raw.githubusercontent.com/funkpopo/dep-packages/main/screenshots/preview.gif)
 
 ## 功能亮点
 
