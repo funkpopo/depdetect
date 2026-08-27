@@ -88,7 +88,7 @@ describe('package document listener', () => {
     expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(2)
   })
 
-  it('fetches metadata again when a dependency name changes', async () => {
+  it('fetches only a newly added dependency when the document is saved', async () => {
     let text = `{ "dependencies": { "vsce": "^2.15.0" } }`
     const document = {
       uri: { toString: () => 'file:///workspace/package.json' },
@@ -99,7 +99,10 @@ describe('package document listener', () => {
 
     await listener(editor)
     text = `{ "dependencies": { "@vscode/vsce": "^2.15.0" } }`
-    await listener(editor)
+    await listener(editor, { fetch: false })
+    expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(1)
+
+    await listener(editor, { incremental: true })
 
     expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(2)
     expect((mocks.fetchPackageVersions.mock.lastCall?.[0] as Item[])[0].key).toBe('@vscode/vsce')
@@ -109,7 +112,7 @@ describe('package document listener', () => {
     })
   })
 
-  it('queues a changed dependency name while the initial fetch is running', async () => {
+  it('queues a newly added dependency saved while the initial fetch is running', async () => {
     let resolveInitial: ((value: unknown) => void) | undefined
     mocks.fetchPackageVersions.mockImplementationOnce(() => new Promise(resolve => {
       resolveInitial = resolve
@@ -125,14 +128,62 @@ describe('package document listener', () => {
 
     const initialRequest = listener(editor)
     text = `{ "dependencies": { "@vscode/vsce": "^2.15.0" } }`
-    const changedRequest = listener(editor)
+    const changedRequest = listener(editor, { fetch: false })
+    const savedRequest = listener(editor, { incremental: true })
     resolveInitial?.([[{ item: mocks.fetchPackageVersions.mock.calls[0][0][0], versions: ['2.15.0'] }], new Map()])
 
-    await Promise.all([initialRequest, changedRequest])
+    await Promise.all([initialRequest, changedRequest, savedRequest])
 
     expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(2)
     expect((mocks.fetchPackageVersions.mock.lastCall?.[0] as Item[])[0].key).toBe('@vscode/vsce')
     expect(getDocumentSession(document as never)?.fetchedDeps[0].item.key).toBe('@vscode/vsce')
+  })
+
+  it('does not refetch existing dependencies or removed dependencies on save', async () => {
+    let text = `{ "dependencies": { "keep": "1.0.0", "remove": "1.0.0" } }`
+    const document = {
+      uri: { toString: () => 'file:///workspace/package.json' },
+      fileName: 'package.json',
+      getText: () => text,
+    }
+    const editor = { document } as never
+
+    await listener(editor)
+    expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(1)
+    expect(mocks.fetchPackageVersions.mock.calls[0][0]).toHaveLength(2)
+
+    text = `{ "dependencies": { "keep": "2.0.0" } }`
+    await listener(editor, { fetch: false })
+    await listener(editor, { incremental: true })
+
+    expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(1)
+    expect(getDocumentSession(document as never)?.fetchedDeps.map(dep => dep.item.key)).toEqual(['keep'])
+  })
+
+  it('retries a failed dependency on save without refetching successful ones', async () => {
+    mocks.fetchPackageVersions.mockImplementationOnce(async (items: Item[]) => [
+      items.map(item => item.key === 'failed'
+        ? { item, error: 'failed: offline' }
+        : { item, versions: ['2.0.0'] }),
+      new Map(),
+    ])
+
+    const document = {
+      uri: { toString: () => 'file:///workspace/package.json' },
+      fileName: 'package.json',
+      getText: () => `{ "dependencies": { "working": "1.0.0", "failed": "1.0.0" } }`,
+    }
+    const editor = { document } as never
+
+    await listener(editor)
+    await listener(editor, { incremental: true })
+
+    expect(mocks.fetchPackageVersions).toHaveBeenCalledTimes(2)
+    expect((mocks.fetchPackageVersions.mock.calls[1][0] as Item[]).map(item => item.key)).toEqual(['failed'])
+    expect(getDocumentSession(document as never)?.fetchedDeps).toEqual(expect.arrayContaining([
+      expect.objectContaining({ item: expect.objectContaining({ key: 'working' }), versions: ['2.0.0'] }),
+      expect.objectContaining({ item: expect.objectContaining({ key: 'failed' }), versions: ['2.0.0'] }),
+    ]))
   })
 
   it('recognizes go.mod documents and fetches Go module versions', async () => {

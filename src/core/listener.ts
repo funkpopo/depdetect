@@ -35,6 +35,8 @@ function parseDeps(document: TextDocument): Item[] {
 export interface ListenerOptions {
   /** Fetch package metadata when this editor is first loaded. */
   fetch?: boolean
+  /** Fetch only dependencies that have not been fetched successfully yet. */
+  incremental?: boolean
   /** Ignore the document state and fetch fresh package metadata. */
   forceFresh?: boolean
 }
@@ -53,29 +55,31 @@ function dependencyIdentity(items: Item[]) {
     .join('\n')
 }
 
-function hasDependencyIdentityChanged(editor: TextEditor) {
-  const session = getDocumentSession(editor.document)
-  if (!session)
-    return true
-  return dependencyIdentity(parseDeps(editor.document)) !== dependencyIdentity(session.dependencies)
+function dependencyKey(item: Pick<Item, 'registry' | 'key'>) {
+  return `${item.registry}:${item.key}`
+}
+
+function dependencySlot(item: Pick<Item, 'registry' | 'key' | 'start' | 'end'>) {
+  return `${dependencyKey(item)}:${item.start}:${item.end}`
 }
 
 function rebindDependencies(items: Item[], fetched: Dependency[]) {
   const fetchedByKey = new Map<string, Dependency[]>()
   for (const dependency of fetched) {
-    const sameKey = fetchedByKey.get(dependency.item.key)
+    const sameKey = fetchedByKey.get(dependencyKey(dependency.item))
     if (sameKey)
       sameKey.push(dependency)
     else
-      fetchedByKey.set(dependency.item.key, [dependency])
+      fetchedByKey.set(dependencyKey(dependency.item), [dependency])
   }
 
   const occurrences = new Map<string, number>()
   return items.map(item => {
-    const occurrence = occurrences.get(item.key) ?? 0
-    occurrences.set(item.key, occurrence + 1)
+    const key = dependencyKey(item)
+    const occurrence = occurrences.get(key) ?? 0
+    occurrences.set(key, occurrence + 1)
 
-    const previous = fetchedByKey.get(item.key)?.[occurrence]
+    const previous = fetchedByKey.get(key)?.[occurrence]
     return previous ? { ...previous, item } : { item }
   })
 }
@@ -90,6 +94,39 @@ function getFetchedMap(fetched: Dependency[]) {
       result.set(dependency.item.key, [dependency])
   }
   return result
+}
+
+function dependenciesNeedingFetch(items: Item[], fetched: Dependency[]) {
+  const currentFetched = rebindDependencies(items, fetched)
+  return items.filter((_, index) => {
+    const dependency = currentFetched[index]
+    // An empty versions array is a valid response meaning that the package
+    // has no stable versions. Only an absent result or an error should be
+    // retried during the next save.
+    return dependency.versions === undefined || dependency.error !== undefined
+  })
+}
+
+function mergeFetchedDependencies(
+  items: Item[],
+  previous: Dependency[],
+  updates: Dependency[],
+) {
+  const previousBySlot = new Map<string, Dependency>()
+  const updatesBySlot = new Map<string, Dependency>()
+
+  for (const dependency of rebindDependencies(items, previous)) {
+    previousBySlot.set(dependencySlot(dependency.item), dependency)
+  }
+  for (const dependency of updates) {
+    updatesBySlot.set(dependencySlot(dependency.item), dependency)
+  }
+
+  return items.map(item => {
+    return updatesBySlot.get(dependencySlot(item))
+      ?? previousBySlot.get(dependencySlot(item))
+      ?? { item }
+  })
 }
 
 function fetchDocumentState(
@@ -117,13 +154,7 @@ function fetchDocumentState(
   }
 
   const request: Promise<Dependency[]> = fetchPackageVersions(items, root, forceFresh)
-    .then(([fetched]) => {
-      // Closing a document invalidates its session. Registry/cache work may
-      // finish, but must never recreate or mutate the closed editor state.
-      if (documentSessions.get(key) === session)
-        session.fetchedDeps = fetched
-      return fetched
-    })
+    .then(([fetched]) => fetched)
     .finally(() => {
       if (pendingDocumentFetches.get(key)?.promise === request)
         pendingDocumentFetches.delete(key)
@@ -163,6 +194,7 @@ export async function parseAndDecorate(
   fetchDeps = true,
   forceFresh = false,
   root = getRoot(editor.document),
+  fetchItems?: Item[],
 ) {
   // const config = workspace.getConfiguration('', editor.document.uri)
 
@@ -175,7 +207,12 @@ export async function parseAndDecorate(
     let fetched: Dependency[] | undefined
 
     if (fetchDeps) {
-      fetched = await fetchDocumentState(editor, parsedDependencies, root, forceFresh)
+      fetched = await fetchDocumentState(
+        editor,
+        fetchItems ?? parsedDependencies,
+        root,
+        forceFresh,
+      )
     }
     else {
       fetched = session.fetchedDeps
@@ -193,7 +230,9 @@ export async function parseAndDecorate(
     // fetched. Re-read it so offsets and the visible decorations belong to
     // the current document version.
     const currentDependencies = parseDeps(editor.document)
-    const currentFetched = rebindDependencies(currentDependencies, fetched ?? [])
+    const currentFetched = fetchItems
+      ? mergeFetchedDependencies(currentDependencies, session.fetchedDeps, fetched ?? [])
+      : rebindDependencies(currentDependencies, fetched ?? [])
     session.dependencies = currentDependencies
     session.fetchedDeps = currentFetched
     session.fetchedDepsMap = getFetchedMap(currentFetched)
@@ -241,6 +280,16 @@ function isDependencyFile(document: TextDocument) {
   return isPackageJson(document) || isRequirements(document) || isPyProject(document) || isGoMod(document) || isPom(document)
 }
 
+function editorForDocument(document: TextDocument) {
+  const sameDocument = (editor: TextEditor) => editor.document.uri.toString() === document.uri.toString()
+  const activeEditor = window.activeTextEditor
+  if (activeEditor && sameDocument(activeEditor))
+    return activeEditor
+
+  const visibleEditors = (window as typeof window & { visibleTextEditors?: readonly TextEditor[] }).visibleTextEditors
+  return visibleEditors?.find(sameDocument)
+}
+
 function isDiffEditor(editor: TextEditor | undefined) {
   if (!editor)
     return false
@@ -274,16 +323,30 @@ export default async function listener(
       statusBarItem.show()
 
       // Version-only edits reuse fetched metadata. Adding, removing, or
-      // renaming a dependency fetches metadata for the new dependency set.
-      const shouldFetch = options.forceFresh === true
-        || (options.fetch !== false && (!hasDocumentState(editor) || hasDependencyIdentityChanged(editor)))
+      // renaming a dependency is handled on save in incremental mode.
+      const hadDocumentState = hasDocumentState(editor)
       const session = ensureDocumentSession(editor.document)
+      const parsedDependencies = parseDeps(editor.document)
+      const incrementalItems = options.incremental && !options.forceFresh
+        ? dependenciesNeedingFetch(parsedDependencies, session.fetchedDeps)
+        : undefined
+      const shouldFetch = options.forceFresh === true
+        || (options.incremental === true
+          ? options.fetch !== false && (incrementalItems?.length ?? 0) > 0
+          : options.fetch !== false && !hadDocumentState)
       // Resolve this before starting asynchronous registry work. The active
       // editor may change while the request is in flight.
       const root = getRoot(editor.document)
 
       session.inProgress = true
-      await parseAndDecorate(editor, false, shouldFetch, options.forceFresh === true, root)
+      await parseAndDecorate(
+        editor,
+        false,
+        shouldFetch,
+        options.forceFresh === true,
+        root,
+        options.forceFresh === true ? undefined : incrementalItems,
+      )
     }
     else {
       statusBarItem.hide()
@@ -317,14 +380,14 @@ export function registerListener(context: ExtensionContext) {
       void listener(editor, isDiffEditor(editor) ? { fetch: false } : {})
     }),
     workspace.onDidChangeTextDocument(e => {
-      const editor = window.activeTextEditor
-      if (editor && editor.document.uri.toString() === e.document.uri.toString() && isDependencyFile(e.document))
-        throttledListener(editor, 100)
+      const editor = editorForDocument(e.document)
+      if (editor && isDependencyFile(e.document))
+        throttledListener(editor, 100, { fetch: false })
     }),
     workspace.onDidSaveTextDocument(document => {
-      const editor = window.activeTextEditor
-      if (editor && editor.document.uri.toString() === document.uri.toString() && isDependencyFile(document))
-        throttledListener(editor, 100)
+      const editor = editorForDocument(document)
+      if (editor && isDependencyFile(document))
+        throttledListener(editor, 100, { incremental: true })
     }),
     workspace.onDidCloseTextDocument(document => {
       removeDocumentSession(document)
