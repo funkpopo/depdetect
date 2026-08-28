@@ -10,7 +10,7 @@ import { parsePom } from '../maven/parse'
 import { statusBarItem } from '../ui/indicators'
 import type Dependency from './Dependency'
 import type Item from './Item'
-import { fetchPackageVersions } from './fetcher'
+import { fetchPackageVersions, type FetchUpdateListener } from './fetcher'
 import { getRoot } from '../utils/resolve'
 import {
   documentKey,
@@ -134,6 +134,7 @@ function fetchDocumentState(
   items: Item[],
   root: string,
   forceFresh: boolean,
+  onUpdate?: FetchUpdateListener,
 ): Promise<Dependency[]> {
   const key = documentKey(editor.document)
   const session = ensureDocumentSession(editor.document)
@@ -149,11 +150,11 @@ function fetchDocumentState(
     return pending.promise.then(() => {
       if (documentSessions.get(key) !== session)
         return []
-      return fetchDocumentState(editor, items, root, forceFresh)
+      return fetchDocumentState(editor, items, root, forceFresh, onUpdate)
     })
   }
 
-  const request: Promise<Dependency[]> = fetchPackageVersions(items, root, forceFresh)
+  const request: Promise<Dependency[]> = fetchPackageVersions(items, root, forceFresh, onUpdate)
     .then(([fetched]) => fetched)
     .finally(() => {
       if (pendingDocumentFetches.get(key)?.promise === request)
@@ -206,13 +207,49 @@ export async function parseAndDecorate(
     session.inProgress = true
     let fetched: Dependency[] | undefined
 
+    const isStale = () =>
+      documentSessions.get(key) !== session || session.generation !== generation
+
+    // Merge a response snapshot into the session and re-render. Called for
+    // every intermediate tick while fetching, and once with the final result.
+    const applyFetched = (updates: Dependency[], final: boolean, settled = 0, total = 0) => {
+      // The document may have changed while package metadata was being
+      // fetched. Re-read it so offsets and the visible decorations belong to
+      // the current document version.
+      const currentDependencies = parseDeps(editor.document)
+      const currentFetched = fetchItems
+        ? mergeFetchedDependencies(currentDependencies, session.fetchedDeps, updates)
+        : rebindDependencies(currentDependencies, updates)
+      session.dependencies = currentDependencies
+      session.fetchedDeps = currentFetched
+      session.fetchedDepsMap = getFetchedMap(currentFetched)
+      session.documentVersion = editor.document.version
+      session.summary = {
+        total: currentFetched.length,
+        fetched: currentFetched.filter(dep => dep.versions?.length).length,
+        failed: currentFetched.filter(dep => dep.error).length,
+      }
+      decorate(editor, currentFetched)
+      // Intermediate ticks report progress; the final render reports via the
+      // status text inside decorate().
+      if (!final)
+        statusBarItem.setText(`👀 ${settled}/${total}`)
+    }
+
     if (fetchDeps) {
       fetched = await fetchDocumentState(
         editor,
         fetchItems ?? parsedDependencies,
         root,
         forceFresh,
+        (partial, settled, total) => {
+          if (isStale())
+            return
+          applyFetched(partial, settled >= total, settled, total)
+        },
       )
+      if (isStale())
+        return
     }
     else {
       fetched = session.fetchedDeps
@@ -223,26 +260,10 @@ export async function parseAndDecorate(
       }
     }
 
-    if (documentSessions.get(key) !== session || session.generation !== generation)
+    if (isStale())
       return
 
-    // The document may have changed while package metadata was being
-    // fetched. Re-read it so offsets and the visible decorations belong to
-    // the current document version.
-    const currentDependencies = parseDeps(editor.document)
-    const currentFetched = fetchItems
-      ? mergeFetchedDependencies(currentDependencies, session.fetchedDeps, fetched ?? [])
-      : rebindDependencies(currentDependencies, fetched ?? [])
-    session.dependencies = currentDependencies
-    session.fetchedDeps = currentFetched
-    session.fetchedDepsMap = getFetchedMap(currentFetched)
-    session.documentVersion = editor.document.version
-    session.summary = {
-      total: currentFetched.length,
-      fetched: currentFetched.filter(dep => dep.versions?.length).length,
-      failed: currentFetched.filter(dep => dep.error).length,
-    }
-    decorate(editor, currentFetched)
+    applyFetched(fetched ?? [], true)
   }
   catch (e) {
     console.error(e)

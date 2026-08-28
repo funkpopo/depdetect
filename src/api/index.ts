@@ -1,3 +1,4 @@
+import pLimit from 'p-limit'
 import type Item from '../core/Item'
 import { cacheTtl, dumpCache, loadCache, type CacheEntry } from './cache'
 import { version } from './version'
@@ -11,10 +12,22 @@ const cache = loadCache()
 
 let cacheChanged = false
 const pendingVersions = new Map<string, Promise<string[] | undefined>>()
+/**
+ * Bound concurrent registry traffic. Both direct lookups and background
+ * revalidations of stale cache entries go through this limiter so opening a
+ * large dependency file cannot flood the network.
+ */
+const requestLimit = pLimit(10)
 
 export interface PackageData {
   version: string[]
   info?: string
+  /**
+   * Resolves when a background revalidation of a stale cache entry has
+   * finished. The stale data is rendered immediately; callers can use this
+   * promise to re-render once fresher registry data becomes available.
+   */
+  refreshed?: Promise<PackageData | undefined>
 }
 
 export async function getPackageData(
@@ -26,24 +39,28 @@ export async function getPackageData(
   if (preTest)
     return preTest
 
-  const name = item.key
-  const cacheKey = `${item.registry}:${name}`
-
-  const cached = getCacheData(cacheKey)
-  const cacheData = cached ? normalizeVersions(item, cached) : undefined
-  if (cacheData && !forceFresh) {
-    if (cached && (cached.length !== cacheData.length || cached.some((version, index) => version !== cacheData[index]))) {
-      setCacheData(cacheKey, cacheData)
+  const cacheKey = `${item.registry}:${item.key}`
+  const entry = cache.get(cacheKey)
+  if (entry && !forceFresh) {
+    const cacheData = normalizeVersions(item, entry.data)
+    if (entry.expiresAt > Date.now()) {
+      console.log('vscode-packages: use cache', item.key)
+      return { version: cacheData }
     }
-    console.log('vscode-packages: use cache', name)
-    return { version: cacheData }
+
+    // Stale-while-revalidate: serve the expired entry right away so the
+    // file never blocks on the network, and refresh it in the background.
+    console.log('vscode-packages: stale cache, revalidating', item.key)
+    const refreshed = reGetVersion(item, root)
+      .then(versions => (versions ? { version: versions } : undefined))
+    return { version: cacheData, refreshed }
   }
 
-  const version = await reGetVersion(item, root)
-  console.log('vscode-packages: fetch', name)
+  const versions = await reGetVersion(item, root)
+  console.log('vscode-packages: fetch', item.key)
 
   return {
-    version: version ?? cacheData ?? [],
+    version: versions ?? [],
   }
 }
 
@@ -53,7 +70,7 @@ async function reGetVersion(item: Item, root: string): Promise<string[] | undefi
   if (pending)
     return pending
 
-  const request = (async () => {
+  const request = requestLimit(async () => {
     try {
       const data = item.registry === 'pypi'
         ? await pypiVersions(item.key)
@@ -74,7 +91,7 @@ async function reGetVersion(item: Item, root: string): Promise<string[] | undefi
     }
 
     return undefined
-  })().finally(() => {
+  }).finally(() => {
     if (pendingVersions.get(key) === request)
       pendingVersions.delete(key)
   })
@@ -85,20 +102,6 @@ async function reGetVersion(item: Item, root: string): Promise<string[] | undefi
 
 export function saveCache() {
   dumpCache(cache, cacheChanged)
-}
-
-function getCacheData(key: string): string[] | undefined {
-  const entry = cache.get(key)
-  if (!entry)
-    return undefined
-
-  if (entry.expiresAt <= Date.now()) {
-    cache.delete(key)
-    cacheChanged = true
-    return undefined
-  }
-
-  return entry.data
 }
 
 function setCacheData(key: string, data: string[]) {

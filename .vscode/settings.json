@@ -39,5 +39,6 @@
     "jsonc",
     "yaml",
     "toml"
-  ]
+  ],
+  "pendant.autoGenerateSessionNames": true
 }

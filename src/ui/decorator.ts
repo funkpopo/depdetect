@@ -28,6 +28,11 @@ export default function decorate(editor: TextEditor, dependencies: Dependency[])
 
   const errors: string[] = []
   const filtered = dependencies.filter(dep => {
+    // Dependencies still being fetched have neither versions, an error nor
+    // info text. Skip them instead of flagging them as failed so results can
+    // be rendered progressively while the remaining requests are in flight.
+    if (dep && dep.versions === undefined && dep.error === undefined && !dep.info)
+      return false
     if (dep && !dep.error && (dep.versions && dep.versions.length))
       return dep
     else if (!dep.error)
@@ -38,10 +43,11 @@ export default function decorate(editor: TextEditor, dependencies: Dependency[])
   const options: DecorationOptions[] = []
   // Decorations are inserted after their own line. Reserve one common column
   // for their marker so short and long requirement names do not make the
-  // check/cross icons visually zig-zag.
+  // check/cross icons visually zig-zag. Computed over all dependencies (not
+  // only the settled ones) so the column stays stable while results stream in.
   const markerColumn = Math.max(
     32,
-    ...filtered.map(dependency => {
+    ...dependencies.map(dependency => {
       const position = editor.document.positionAt(dependency.item.end)
       return editor.document.lineAt(position.line).text.length + 3
     }),
