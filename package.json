@@ -2,7 +2,7 @@
   "publisher": "funkpopo",
   "name": "depdetect",
   "displayName": "DepDetect",
-  "version": "0.1.6",
+  "version": "0.1.6-fix1",
   "private": true,
   "packageManager": "pnpm@10.34.5",
   "description": "Detects and manages dependencies versions in projects.",
