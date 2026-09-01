@@ -2,7 +2,7 @@
   "publisher": "funkpopo",
   "name": "depdetect",
   "displayName": "DepDetect",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "packageManager": "pnpm@10.34.5",
   "description": "Detects and manages dependencies versions in projects.",
@@ -43,7 +43,8 @@
     "workspaceContains:**/go.mod",
     "workspaceContains:**/pom.xml",
     "onCommand:depdetect.replaceVersion",
-    "onCommand:depdetect.retry"
+    "onCommand:depdetect.retry",
+    "onCommand:depdetect.detectPanel"
   ],
   "contributes": {
     "commands": [
@@ -55,6 +56,11 @@
       {
         "command": "depdetect.retry",
         "title": "Retry to fetch the active dependency file",
+        "category": "🎈 DepDetect"
+      },
+      {
+        "command": "depdetect.detectPanel",
+        "title": "Open the manual detection panel",
         "category": "🎈 DepDetect"
       }
     ],
@@ -104,7 +110,7 @@
     "@vscode/vsce": "3.9.2",
     "bumpp": "12.2.1",
     "eslint": "10.8.1",
-    "npm-registry-fetch": "19.1.1",
+    "npm-registry-fetch": "20.0.1",
     "p-limit": "7.3.1",
     "semver": "7.8.5",
     "tsup": "8.5.1",

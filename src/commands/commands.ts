@@ -3,6 +3,7 @@ import { Range, commands } from 'vscode'
 import jsonListener from '../core/listener'
 import type { ReplaceItem } from '../core/DocumentSession'
 import { getDocumentSession } from '../core/DocumentSession'
+import { showDetectPanel } from '../ui/detectPanel'
 
 function isDependencyFile(fileName: string) {
   const normalized = fileName.toLocaleLowerCase()
@@ -41,4 +42,9 @@ export const reload = commands.registerTextEditorCommand(
   },
 )
 
-export default { replaceVersion, reload }
+export const detectPanel = commands.registerCommand(
+  'depdetect.detectPanel',
+  showDetectPanel,
+)
+
+export default { replaceVersion, reload, detectPanel }
